@@ -2,19 +2,19 @@
 <img width="139" height="146" alt="maestr-logo" src="https://github.com/user-attachments/assets/9aa16bd7-f207-4f69-b4b0-b3484ea5f657" />
 </div>
 
-Maestr is a lightweight desktop workspace for AI-assisted software development. It brings together local files, code editing, terminals, Git, agent CLIs, and code review without replacing an existing editor ecosystem.
+Maestr is a lightweight desktop workspace for AI-assisted software development.
 
 The app runs locally with Tauri and uses tools already installed on the machine, including Git, Claude Code, Codex, OpenCode, and Pi. It does not call AI provider APIs directly.
 
 ## Features
 
-- Open local folders and browse nested projects.
-- Edit multiple files with Monaco Editor, syntax highlighting, search, replace, and save.
-- Run multiple shell sessions in an integrated xterm.js terminal.
-- Inspect Git status, stage or unstage changes, commit, pull, push, and switch branches.
-- Start an installed AI agent in the active workspace.
-- Review changed files, inspect diffs, add line comments, and send review comments to the selected agent.
-- Customize editor font, font size, line numbers, diff layout, and color theme.
+- Use the AI Agent of your choice.
+- Edit your files using Monaco editor.
+- Local terminal support.
+- Git actions straight from the UI.
+- Review and approve your AI Agent code.
+- Comment changes and send to your Agent to fix them.
+- Customizable editor font, font size, line numbers, diff layout, and color theme.
 <div align="center">
 <img width="675" height="361" alt="screenshot-2026-07-22_22-58-38" src="https://github.com/user-attachments/assets/ce4583f5-d9ad-4984-8d06-d09d0bdb9ab9" />
 
@@ -27,7 +27,6 @@ The app runs locally with Tauri and uses tools already installed on the machine,
 - React, TypeScript, and Vite
 - Monaco Editor and xterm.js
 - Zustand for frontend state
-- Git CLI and local AI agent CLIs
 
 ## Requirements
 
@@ -35,16 +34,13 @@ The app runs locally with Tauri and uses tools already installed on the machine,
 - pnpm 9 or later
 - Rust stable toolchain
 - System build dependencies required by Tauri for your platform
-- Git, plus any agent CLI you intend to use
-
+- Git, plus any agent CLI you like
 ## Getting Started
 
 ```bash
 pnpm install
 pnpm tauri dev
 ```
-
-The app opens local folders directly from the desktop dialog. No project files are uploaded.
 
 ## Commands
 
@@ -77,9 +73,9 @@ System tools
   |- Git, shell, Claude Code, Codex, OpenCode, Pi
 ```
 
-## Project Scope
+## Philosophy
 
-Maestr is intentionally CLI-first. It does not aim to replace VS Code, provide an extension marketplace, implement LSP, or connect directly to AI model APIs. The product focus is a fast local workflow: edit, ask an agent, review changes, and commit.
+Maestr is intentionally simple. It does not aim to replace VS Code, provide an extension marketplace, implement LSP, or connect directly to AI model APIs. The product focus is a fast local workflow: ask an agent, review changes or edit them, and commit.
 
 ## Contributing
 
