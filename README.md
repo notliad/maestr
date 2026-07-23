@@ -1,5 +1,5 @@
 <div align="center">
-<img width="300" height="300" alt="maestr-logo" src="https://github.com/user-attachments/assets/9aa16bd7-f207-4f69-b4b0-b3484ea5f657" />
+<img width="139" height="146" alt="maestr-logo" src="https://github.com/user-attachments/assets/9aa16bd7-f207-4f69-b4b0-b3484ea5f657" />
 </div>
 
 Maestr is a lightweight desktop workspace for AI-assisted software development. It brings together local files, code editing, terminals, Git, agent CLIs, and code review without replacing an existing editor ecosystem.
