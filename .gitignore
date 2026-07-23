@@ -1,0 +1,32 @@
+# Dependencies and frontend builds
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.tsbuildinfo
+
+# Rust and Tauri builds
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Logs and local configuration
+logs/
+*.log
+*-debug.log*
+.env
+.env.*
+!.env.example
+*.local
+
+# Test artifacts
+coverage/
+playwright-report/
+test-results/
+
+# Editor and operating system files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.sw?
