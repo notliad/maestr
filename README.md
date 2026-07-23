@@ -19,9 +19,15 @@ Maestr is built for developers who want AI to accelerate their workflow, not tak
 - Customizable editor font, font size, line numbers, diff layout, and color theme.
 <div align="center">
 <img width="675" height="361" alt="screenshot-2026-07-22_22-58-38" src="https://github.com/user-attachments/assets/ce4583f5-d9ad-4984-8d06-d09d0bdb9ab9" />
-
-<img width="675" height="361" alt="screenshot-2026-07-22_22-59-33" src="https://github.com/user-attachments/assets/271d930b-90cd-4593-9bc2-1a833eeed96d" />
+<br>
+<br>
+<img width="675" height="361" alt="screenshot-2026-07-23_14-44-07" src="https://github.com/user-attachments/assets/b48fddfd-dcc0-4d3d-bb5a-0b3c05c965fb" />
+<br>
+<br>
+<img width="675" height="361" alt="screenshot-2026-07-23_15-02-50" src="https://github.com/user-attachments/assets/bccf2315-a7f7-4fa8-8794-839a529dac04" />
 </div>
+
+
 
 ## Tech Stack
 
