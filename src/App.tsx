@@ -6,7 +6,7 @@ import Editor, { DiffEditor, type BeforeMount } from "@monaco-editor/react";
 import { listen } from "@tauri-apps/api/event";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import { ChevronDown, ChevronRight, ChevronUp, CircleStop, Code2, FileCode2, Folder, FolderOpen, GitBranch, LoaderCircle, Maximize2, MessageSquare, Minimize2, PanelRight, Play, Plus, Save, ScrollText, Settings2, TerminalSquare, WandSparkles, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleStop, Code2, FileCode2, Folder, FolderOpen, GitBranch, LoaderCircle, Maximize2, MessageSquare, Minimize2, Play, Plus, Save, ScrollText, Settings2, TerminalSquare, WandSparkles, X } from "lucide-react";
 import { useWorkspaceStore } from "./store";
 import type { FileEntry } from "./types";
 import maestrLogo from "../assets/maestr-logo.png";
@@ -22,6 +22,7 @@ type GitDiff = { original: string; modified: string };
 type CodeComment = { id: string; path: string; startLine: number; endLine: number; excerpt: string; text: string; status: "pending" | "sent" };
 type CommentDraft = Omit<CodeComment, "id" | "status">;
 type AppLog = { id: string; time: string; message: string };
+type WorkspaceMode = "review" | "edit";
 
 function WindowControls() {
   const appWindow = getCurrentWindow();
@@ -123,21 +124,35 @@ function TerminalView({ sessionId, active, onExit }: { sessionId: number; active
   return <div className={`terminal-view ${active ? "active" : ""}`} ref={container} />;
 }
 
-function TerminalDock({ open: isOpen, onToggle, onResizeStart, onResizeReset, height }: { open: boolean; onToggle: () => void; onResizeStart: (event: ReactPointerEvent) => void; onResizeReset: () => void; height: number }) {
+function TerminalDock({ open: isOpen, command, onCommandHandled, onToggle, onResizeStart, onResizeReset, height }: { open: boolean; command: string | null; onCommandHandled: () => void; onToggle: () => void; onResizeStart: (event: ReactPointerEvent) => void; onResizeReset: () => void; height: number }) {
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
+  const sessionIds = useRef<number[]>([]);
+  useEffect(() => { sessionIds.current = sessions.map((session) => session.id); }, [sessions]);
+  useEffect(() => () => { sessionIds.current.forEach((sessionId) => void invoke("close_terminal", { sessionId })); }, []);
   const createSession = useCallback(async () => {
     try {
       const id = await invoke<number>("start_terminal", { cols: 100, rows: 24 });
       setSessions((current) => [...current, { id, label: `Terminal ${current.length + 1}` }]);
       setActiveId(id);
+      return id;
     } catch (error) {
       console.error("Could not start terminal", error);
+      return null;
     }
   }, []);
   useEffect(() => {
-    if (isOpen && sessions.length === 0) void createSession();
-  }, [createSession, isOpen, sessions.length]);
+    if (isOpen && sessions.length === 0 && !command) void createSession();
+  }, [command, createSession, isOpen, sessions.length]);
+  useEffect(() => {
+    if (!isOpen || !command) return;
+    if (activeId === null) { void createSession(); return; }
+    const timer = window.setTimeout(() => {
+      void invoke("write_terminal", { sessionId: activeId, data: command }).catch(() => undefined);
+      onCommandHandled();
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [activeId, command, createSession, isOpen, onCommandHandled]);
   const closeSession = async (id: number) => {
     await invoke("close_terminal", { sessionId: id }).catch(() => undefined);
     const next = sessions.filter((session) => session.id !== id);
@@ -167,57 +182,49 @@ function BranchSelect({ onFeedback, onChanged }: { onFeedback: (message: string)
   return <div className="branch-control"><GitBranch size={13} /><span>{branch || "Branch"}</span><select aria-label="Select branch" value={branch} onChange={(event) => void changeBranch(event.target.value)} disabled={!branch || branches.length === 0}><option value="" disabled>Branch</option>{branches.map((item) => <option key={item} value={item}>{item}</option>)}</select><ChevronDown size={13} /></div>;
 }
 
-function GitPanel({ onFeedback, onLog, feedback, revision, onReview, onAskCommit, canGenerateCommit }: { onFeedback: (message: string) => void; onLog: (message: string) => void; feedback: string; revision: number; onReview: (path: string) => void; onAskCommit: () => Promise<string>; canGenerateCommit: boolean }) {
-  const [status, setStatus] = useState<GitStatus | null>(null);
+function GitPanel({ status, onRefresh, onFeedback, onLog, feedback, onAuthenticate, onReview, onAskCommit, canGenerateCommit }: { status: GitStatus | null; onRefresh: () => Promise<void>; onFeedback: (message: string) => void; onLog: (message: string) => void; feedback: string; onAuthenticate: () => void; onReview: (path: string) => void; onAskCommit: () => Promise<string>; canGenerateCommit: boolean }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [openSections, setOpenSections] = useState({ staged: true, changes: true });
-  const refresh = useCallback(async () => {
-    try {
-      const next = await invoke<GitStatus>("git_status");
-      setStatus(next);
-    } catch (error) { setStatus({ isRepo: true, canPush: false, files: [], branch: String(error) }); }
-  }, []);
-  useEffect(() => { void refresh(); }, [refresh, revision]);
+  const needsGitHubAuth = /could not read Username|Authentication failed|terminal prompts disabled/i.test(feedback);
   const run = async (command: string, args: Record<string, unknown> = {}, success = "Git action completed") => {
     setBusy(true);
-    try { await invoke(command, args); await refresh(); onFeedback(success); onLog(success); } catch (error) { const message = `Git error: ${String(error)}`; onFeedback(message); onLog(message); }
+    try { await invoke(command, args); await onRefresh(); onFeedback(success); onLog(success); } catch (error) { const message = `Git error: ${String(error)}`; onFeedback(message); onLog(message); }
     finally { setBusy(false); }
   };
   const generateCommit = async () => { setGenerating(true); try { const next = await onAskCommit(); setMessage(next); onFeedback("Commit message generated"); onLog("Commit message generated"); } catch (error) { const message = `Commit message error: ${String(error)}`; onFeedback(message); onLog(message); } finally { setGenerating(false); } };
   if (!status) return <div className="git-panel git-loading">Loading Git…</div>;
   if (!status.isRepo) return <div className="git-panel git-empty"><GitBranch size={20} /><p>Not a Git repository</p><span>Initialize Git in the terminal to enable source control.</span></div>;
   return <div className="git-panel">
-    {feedback && <div className="git-feedback">{feedback}</div>}
-    <div className="git-toolbar"><span className="git-branch-label"><GitBranch size={13} /> {status.branch ?? "detached"}</span><button className="icon-button small" title="Refresh Git" onClick={() => void refresh()}><span aria-hidden="true">↻</span></button></div>
+    {feedback && <div className="git-feedback">{needsGitHubAuth ? <><strong>GitHub precisa de autenticação</strong><span>Conecte sua conta para habilitar Push por HTTPS.</span><button className="button button-primary" onClick={onAuthenticate}>Conectar GitHub</button></> : feedback}</div>}
+    <div className="git-toolbar"><span className="git-branch-label"><GitBranch size={13} /> {status.branch ?? "detached"}</span><button className="icon-button small" title="Refresh Git" onClick={() => void onRefresh()}><span aria-hidden="true">↻</span></button></div>
     {status.files.some((file) => file.staged) && <div className="git-commit"><input value={message} onChange={(event) => setMessage(event.currentTarget.value)} placeholder="Commit message" onKeyDown={(event) => { if (event.key === "Enter" && message.trim()) { void run("git_commit", { message }); setMessage(""); } }} /><button className="icon-button small" title={canGenerateCommit ? "Generate commit message with selected agent" : "Select an agent to generate a commit message"} onClick={() => void generateCommit()} disabled={!canGenerateCommit || busy || generating}>{generating ? <LoaderCircle size={14} className="loading-spin" /> : <WandSparkles size={14} />}</button><button className="button button-primary" onClick={() => { void run("git_commit", { message }); setMessage(""); }} disabled={busy || generating || !message.trim()}>Commit</button></div>}
     <div className="git-actions">{status.files.some((file) => !file.staged) && <button className="button button-quiet" onClick={() => void run("git_stage_all", {}, "All files staged")} disabled={busy}>Stage all</button>}{status.files.some((file) => file.staged) && <button className="button button-quiet" onClick={() => void run("git_unstage_all", {}, "All files unstaged")} disabled={busy}>Unstage all</button>}<button className="button button-quiet" onClick={() => void run("git_sync", { action: "pull" }, "Pull completed")} disabled={busy}>Pull</button>{status.canPush && <button className="button button-quiet" onClick={() => void run("git_sync", { action: "push" }, "Push completed")} disabled={busy}>Push</button>}</div>
-    {(() => { const staged = status.files.filter((file) => file.staged); const changes = status.files.filter((file) => !file.staged); const renderFile = (file: GitFile) => <button key={file.path} className="git-file" onClick={() => onReview(file.path)}><span className={`git-status status-${file.status}`}>{file.status === "untracked" ? "U" : file.status[0].toUpperCase()}</span><span className="git-file-name">{file.path}</span><span className="git-lines"><strong>+{file.additions ?? 0}</strong><em>−{file.deletions ?? 0}</em></span><span className="git-stage" onClick={(event) => { event.stopPropagation(); void run(file.staged ? "git_unstage" : "git_stage", { path: file.path }, file.staged ? "File unstaged" : "File staged"); }}>{file.staged ? "−" : "+"}</span></button>; const section = (name: "staged" | "changes", title: string, items: GitFile[], empty: string) => <><button className="git-section-label git-section-toggle" onClick={() => setOpenSections((current) => ({ ...current, [name]: !current[name] }))}>{openSections[name] ? <ChevronDown size={13} /> : <ChevronRight size={13} />} {title} <span>{items.length}</span></button>{openSections[name] && <div className="git-file-list">{items.length === 0 ? <span className="git-muted">{empty}</span> : items.map(renderFile)}</div>}</>; return <>{section("staged", "Staged Changes", staged, "Nothing staged")}{section("changes", "Changes", changes, "Working tree clean")}</>; })()}
+    {(() => { const staged = status.files.filter((file) => file.staged); const changes = status.files.filter((file) => !file.staged); const renderFile = (file: GitFile) => <button key={file.path} className="git-file" onClick={() => onReview(file.path)}><span className={`git-status status-${file.status}`}>{file.status === "untracked" ? "U" : file.status[0].toUpperCase()}</span><span className="git-file-name">{file.path}</span><span className="git-lines"><strong>+{file.additions ?? 0}</strong><em>−{file.deletions ?? 0}</em></span><span className="git-stage" title={file.staged ? "Unstage file" : "Stage file"} onClick={(event) => { event.stopPropagation(); void run(file.staged ? "git_unstage" : "git_stage", { path: file.path }, file.staged ? "File unstaged" : "File staged"); }}>{file.staged ? "−" : "+"}</span></button>; const section = (name: "staged" | "changes", title: string, items: GitFile[], empty: string) => <><button className="git-section-label git-section-toggle" onClick={() => setOpenSections((current) => ({ ...current, [name]: !current[name] }))}>{openSections[name] ? <ChevronDown size={13} /> : <ChevronRight size={13} />} {title} <span>{items.length}</span></button>{openSections[name] && <div className="git-file-list">{items.length === 0 ? <span className="git-muted">{empty}</span> : items.map(renderFile)}</div>}</>; return <>{section("staged", "Staged Changes", staged, "Nothing staged")}{section("changes", "Changes", changes, "Working tree clean")}</>; })()}
   </div>;
 }
 
-function ReviewPanel({ revision, selected, checked, onSelect, onToggle, comments, onSendComments, onDeleteComment, onClearSent, agentRunning, onFeedback }: { revision: number; selected: string; checked: string[]; onSelect: (path: string) => void; onToggle: (path: string) => void; comments: CodeComment[]; onSendComments: () => Promise<void>; onDeleteComment: (id: string) => void; onClearSent: () => void; agentRunning: boolean; onFeedback: (message: string) => void }) {
-  const [files, setFiles] = useState<GitFile[]>([]);
+function ReviewPanel({ files, selected, checked, onSelect, onToggle, onStage, comments, onSendComments, onDeleteComment, onClearSent, agentRunning, onFeedback }: { files: GitFile[]; selected: string; checked: string[]; onSelect: (path: string) => void; onToggle: (path: string) => void; onStage: (file: GitFile) => void; comments: CodeComment[]; onSendComments: () => Promise<void>; onDeleteComment: (id: string) => void; onClearSent: () => void; agentRunning: boolean; onFeedback: (message: string) => void }) {
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const completedGroups = useRef(new Set<string>());
   const [sending, setSending] = useState(false);
-  useEffect(() => { void invoke<GitStatus>("git_status").then((status) => setFiles(status.files)).catch(() => setFiles([])); }, [revision]);
   const groups = files.reduce<Record<string, GitFile[]>>((all, file) => { const folder = file.path.split(/[\\/]/).slice(0, -1).join("/") || "."; (all[folder] ??= []).push(file); return all; }, {});
   useEffect(() => { const complete = new Set(Object.entries(groups).filter(([, items]) => items.every((file) => checked.includes(file.path))).map(([folder]) => folder)); const newlyComplete = [...complete].filter((folder) => !completedGroups.current.has(folder)); completedGroups.current = complete; if (newlyComplete.length) setOpenGroups((current) => ({ ...current, ...Object.fromEntries(newlyComplete.map((folder) => [folder, false])) })); }, [checked, files]);
   const done = files.length > 0 && files.every((file) => checked.includes(file.path));
   const pending = comments.filter((comment) => comment.status === "pending");
   const sent = comments.filter((comment) => comment.status === "sent");
   const send = async () => { setSending(true); try { await onSendComments(); onFeedback(`${pending.length} comment${pending.length === 1 ? "" : "s"} sent to agent`); } catch (error) { onFeedback(String(error)); } finally { setSending(false); } };
-  return <div className="review-panel"><div className="review-section-title">Code Review</div>{done && <div className="review-complete">✓ All changes reviewed</div>}<div className="review-summary">{files.length ? `${checked.length}/${files.length} reviewed` : "No changes to review"}</div>{pending.length > 0 && <div className="review-comment-actions"><button className="button button-primary" onClick={() => void send()} disabled={!agentRunning || sending}><MessageSquare size={14} /> {sending ? "Sending…" : `Send comments (${pending.length})`}</button>{!agentRunning && <span>Start an agent to send</span>}</div>}{comments.length > 0 && <details className="review-comment-queue"><summary><MessageSquare size={13} /> {pending.length} pending comment{pending.length === 1 ? "" : "s"}</summary>{comments.map((comment) => <div className="review-comment-item" key={comment.id}><span><strong>{comment.path}:{comment.startLine}</strong>{comment.text}</span><button className="icon-button small" title="Remove comment" onClick={() => onDeleteComment(comment.id)}><X size={13} /></button></div>)}{sent.length > 0 && <button className="button button-quiet" onClick={onClearSent}>Clear sent</button>}</details>}{Object.entries(groups).map(([folder, items]) => { const complete = items.every((file) => checked.includes(file.path)); const open = openGroups[folder] ?? !complete; return <div className="review-group" key={folder}><button className="review-group-title" onClick={() => setOpenGroups((current) => ({ ...current, [folder]: !open }))}><span>{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}<Folder size={13} /> {folder}</span>{complete && <span className="review-group-check">✓</span>}</button>{open && items.map((file) => <div key={file.path} className={`review-file ${selected === file.path ? "active" : ""}`}><button onClick={() => onSelect(file.path)}><span className="git-status">{file.status === "untracked" ? "U" : file.status[0].toUpperCase()}</span><span>{file.path.split(/[\\/]/).pop()}</span><span className="git-lines"><strong>+{file.additions ?? 0}</strong><em>−{file.deletions ?? 0}</em></span></button><button className={`review-check ${checked.includes(file.path) ? "checked" : ""}`} title="Mark reviewed" onClick={() => onToggle(file.path)}>✓</button></div>)}</div>; })}</div>;
+  return <div className="review-panel">{done && <div className="review-complete">✓ All changes reviewed</div>}<div className="review-summary">{files.length ? `${checked.filter((path) => files.some((file) => file.path === path)).length}/${files.length} reviewed` : "No changes to review"}</div>{pending.length > 0 && <div className="review-comment-actions"><button className="button button-primary" onClick={() => void send()} disabled={!agentRunning || sending}><MessageSquare size={14} /> {sending ? "Sending…" : `Send comments (${pending.length})`}</button>{!agentRunning && <span>Expand Agent and start a session to send</span>}</div>}{comments.length > 0 && <details className="review-comment-queue"><summary><MessageSquare size={13} /> {pending.length} pending comment{pending.length === 1 ? "" : "s"}</summary>{comments.map((comment) => <div className="review-comment-item" key={comment.id}><span><strong>{comment.path}:{comment.startLine}</strong>{comment.text}</span><button className="icon-button small" title="Remove comment" onClick={() => onDeleteComment(comment.id)}><X size={13} /></button></div>)}{sent.length > 0 && <button className="button button-quiet" onClick={onClearSent}>Clear sent</button>}</details>}{Object.entries(groups).map(([folder, items]) => { const complete = items.every((file) => checked.includes(file.path)); const open = openGroups[folder] ?? !complete; return <div className="review-group" key={folder}><button className="review-group-title" onClick={() => setOpenGroups((current) => ({ ...current, [folder]: !open }))}><span>{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}<Folder size={13} /> {folder}</span>{complete && <span className="review-group-check">✓</span>}</button>{open && items.map((file) => <div key={file.path} className={`review-file ${selected === file.path ? "active" : ""}`}><button onClick={() => onSelect(file.path)} aria-current={selected === file.path ? "page" : undefined}><span className={`git-status status-${file.status}`}>{file.status === "untracked" ? "U" : file.status[0].toUpperCase()}</span><span>{file.path.split(/[\\/]/).pop()}</span><span className="git-lines"><strong>+{file.additions ?? 0}</strong><em>−{file.deletions ?? 0}</em></span>{selected === file.path && <span className="review-active-label">Viewing</span>}</button><button className="review-stage" title={file.staged ? "Unstage file" : "Stage file"} onClick={() => onStage(file)}>{file.staged ? "−" : "+"}</button><button className={`review-check ${checked.includes(file.path) ? "checked" : ""}`} title={checked.includes(file.path) ? "Mark unreviewed" : "Mark reviewed"} onClick={() => onToggle(file.path)}>✓</button></div>)}</div>; })}</div>;
 }
-function AgentPanel({ onSessionChange, onAgentChange, onLog }: { onSessionChange: (sessionId: number | null) => void; onAgentChange: (agent: string | null) => void; onLog: (message: string) => void }) {
+function AgentPanel({ compact, onToggleCompact, onSessionChange, onAgentChange, onLog }: { compact: boolean; onToggleCompact: () => void; onSessionChange: (sessionId: number | null) => void; onAgentChange: (agent: string | null) => void; onLog: (message: string) => void }) {
   const root = useWorkspaceStore((state) => state.root);
   const [agents, setAgents] = useState<{ name: string; command: string; version?: string }[]>([]);
   const [selected, setSelected] = useState("");
   const [sessionId, setSessionId] = useState<number | null>(null);
   const running = sessionId !== null;
   const handleExit = useCallback(() => { setSessionId(null); onSessionChange(null); onLog("Agent session exited"); }, [onLog, onSessionChange]);
+  useEffect(() => () => { if (sessionId !== null) void invoke("close_terminal", { sessionId }); }, [sessionId]);
   useEffect(() => {
     const candidates = [{ name: "Claude Code", command: "claude" }, { name: "Codex CLI", command: "codex" }, { name: "OpenCode", command: "opencode" }, { name: "Pi", command: "pi" }];
     void Promise.all(candidates.map(async (candidate) => ({ ...candidate, ...(await invoke<{ available: boolean; version?: string }>("detect_agent", { agent: candidate.command }).catch(() => ({ available: false }))) }))).then((found) => {
@@ -230,8 +237,8 @@ function AgentPanel({ onSessionChange, onAgentChange, onLog }: { onSessionChange
   const launch = async () => { if (!selected || running) return; localStorage.setItem(`maestr-agent:${root ?? "default"}`, selected); try { const id = await invoke<number>("start_terminal", { cols: 100, rows: 28 }); setSessionId(id); onSessionChange(id); onLog(`${selected} started`); await invoke("write_terminal", { sessionId: id, data: `clear; ${selected}\r` }); } catch { setSessionId(null); onSessionChange(null); onLog(`Could not start ${selected}`); } };
   const close = async () => { if (sessionId !== null) { await invoke("close_terminal", { sessionId }).catch(() => undefined); setSessionId(null); onSessionChange(null); onLog("Agent stopped"); } };
   return <>
-    <div className="panel-heading agent-heading"><span>Agent</span><span className="agent-controls"><select className="agent-select" value={selected} onChange={(event) => setSelected(event.currentTarget.value)} disabled={running}><option value="">No agent found</option>{agents.map((agent) => <option key={agent.command} value={agent.command}>{agent.name}{agent.version ? ` · ${agent.version}` : ""}</option>)}</select><button className={`icon-button small agent-run-button ${running ? "running" : ""}`} title={running ? "Stop agent" : "Start agent"} onClick={() => void (running ? close() : launch())} disabled={!selected}>{running ? <CircleStop size={15} /> : <Play size={14} />}</button></span></div>
-    <div className="agent-panel-content">{sessionId !== null ? <div className="agent-terminal-host"><TerminalView sessionId={sessionId} active onExit={handleExit} /></div> : <div className="agent-empty"><TerminalSquare size={26} /><p>Select an agent and press Play</p></div>}</div>
+    {compact ? <button className="agent-rail" title={running ? "Expand running agent" : "Expand agent"} onClick={onToggleCompact}><TerminalSquare size={17} /><span className={`agent-rail-status ${running ? "running" : ""}`} /><span>Agent</span><ChevronRight size={14} /></button> : <div className="panel-heading agent-heading"><span className="agent-primary"><span>Agent</span><select className="agent-select" value={selected} onChange={(event) => setSelected(event.currentTarget.value)} disabled={running}><option value="">No agent found</option>{agents.map((agent) => <option key={agent.command} value={agent.command}>{agent.name}{agent.version ? ` · ${agent.version}` : ""}</option>)}</select><button className={`icon-button small agent-run-button ${running ? "running" : ""}`} title={running ? "Stop agent" : "Start agent"} onClick={() => void (running ? close() : launch())} disabled={!selected}>{running ? <CircleStop size={15} /> : <Play size={14} />}</button></span><button className="icon-button small agent-collapse" title="Collapse agent" onClick={onToggleCompact}><ChevronLeft size={14} /></button></div>}
+    <div className={`agent-panel-content ${compact ? "compact-content" : ""}`}>{sessionId !== null ? <div className="agent-terminal-host"><TerminalView sessionId={sessionId} active={!compact} onExit={handleExit} /></div> : <div className="agent-empty"><TerminalSquare size={26} /><p>Select an agent and press Play</p></div>}</div>
   </>;
 }
 
@@ -252,10 +259,11 @@ function EmptyWorkspace({ onOpen }: { onOpen: () => void }) {
 
 function App() {
   const { root, entries, expanded, tabs, activePath, busy, error, loadRecent, openWorkspace, toggleDirectory, updateFile, saveFile, closeTab, setActive } = useWorkspaceStore();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [sidebarTab, setSidebarTab] = useState<"explorer" | "git" | "review">("explorer");
+  const [mode, setMode] = useState<WorkspaceMode>("edit");
+  const [agentCompact, setAgentCompact] = useState(false);
+  const [explorerCompact, setExplorerCompact] = useState(false);
+  const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const [gitFeedback, setGitFeedback] = useState("");
-  const [gitRevision, setGitRevision] = useState(0);
   const [review, setReview] = useState<{ path: string; diff: GitDiff } | null>(null);
   const [reviewChecked, setReviewChecked] = useState<string[]>([]);
   const [comments, setComments] = useState<CodeComment[]>([]);
@@ -271,21 +279,61 @@ function App() {
   const updateSettings = (key: string, value: unknown) => setSettings((current: Record<string, unknown>) => { const next = { ...current, [key]: value }; localStorage.setItem("maestr-settings", JSON.stringify(next)); return next; });
   const editorTheme = ["maestr", "onedark", "catppuccin", "nord", "solarized"].includes(settings.theme) ? `maestr-${settings.theme}` : settings.theme === "light" ? "vs-light" : "hc-black";
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalCommand, setTerminalCommand] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(248);
   const [agentWidth, setAgentWidth] = useState(() => Math.max(300, Math.round((window.innerWidth - 248) / 2)));
   const [terminalHeight, setTerminalHeight] = useState(190);
   const resizeState = useRef<{ kind: "sidebar" | "agent" | "terminal"; start: number; size: number } | null>(null);
+  const gitFingerprint = useRef("");
+  const reviewPath = useRef<string | null>(null);
   const activeFile = tabs.find((tab) => tab.path === activePath);
+  const reviewFiles = gitStatus?.files ?? [];
+  const reviewIndex = review ? reviewFiles.findIndex((file) => file.path === review.path) : -1;
   const rootName = useMemo(() => root?.split(/[\\/]/).filter(Boolean).at(-1) ?? "Workspace", [root]);
   const addLog = useCallback((message: string) => setLogs((current) => [...current.slice(-99), { id: crypto.randomUUID(), time: new Date().toLocaleTimeString(), message }]), []);
+  const refreshGit = useCallback(async () => {
+    try {
+      const next = await invoke<GitStatus>("git_status");
+      const fingerprint = JSON.stringify(next);
+      setGitStatus(next);
+      const path = reviewPath.current;
+      if (path) {
+        if (next.files.some((file) => file.path === path)) {
+          const diff = await invoke<GitDiff>("git_diff", { path });
+          setReview((current) => current?.path === path && current.diff.original === diff.original && current.diff.modified === diff.modified ? current : { path, diff });
+        } else setReview(null);
+      }
+      if (fingerprint === gitFingerprint.current) return;
+      gitFingerprint.current = fingerprint;
+      await useWorkspaceStore.getState().refreshOpenFiles();
+      await useWorkspaceStore.getState().loadDirectory();
+    } catch (error) {
+      setGitFeedback(`Git error: ${String(error)}`);
+    }
+  }, []);
 
   useEffect(() => { void loadRecent(); }, [loadRecent]);
   useEffect(() => {
+    setReview(null); setReviewChecked([]); setCommentDraft(null); setGitStatus(null); setGitFeedback(""); setLogs([]); setLogsOpen(false); setTerminalOpen(false); setAgentCompact(false); setExplorerCompact(false); setAgentSessionId(null); setSelectedAgent(null); gitFingerprint.current = ""; commentEditors.current.clear();
     if (!root) { setComments([]); setCommentsLoadedFor(null); return; }
     try { setComments(JSON.parse(localStorage.getItem(`maestr-comments:${root}`) || "[]")); } catch { setComments([]); }
     setCommentsLoadedFor(root);
-    setCommentDraft(null);
+    const stored = localStorage.getItem(`maestr-mode:${root}`) as WorkspaceMode | null;
+    void invoke<GitStatus>("git_status").then((status) => {
+      setGitStatus(status);
+      gitFingerprint.current = JSON.stringify(status);
+      const initialMode = stored === "review" || stored === "edit" ? stored : status.files.length ? "review" : "edit";
+      setMode(initialMode);
+      setAgentCompact(initialMode === "review");
+    }).catch((nextError) => setGitFeedback(`Git error: ${String(nextError)}`));
   }, [root]);
+  useEffect(() => { reviewPath.current = review?.path ?? null; }, [review]);
+  useEffect(() => {
+    if (!root || (mode !== "review" && agentSessionId === null)) return;
+    // ponytail: lightweight polling avoids a watcher dependency; use native file events if 2s latency becomes material.
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void refreshGit(); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [agentSessionId, mode, refreshGit, root]);
   useEffect(() => {
     if (root && commentsLoadedFor === root) localStorage.setItem(`maestr-comments:${root}`, JSON.stringify(comments));
   }, [comments, commentsLoadedFor, root]);
@@ -296,12 +344,11 @@ function App() {
   }, [comments]);
   useEffect(() => { commentEditors.current.forEach((target, path) => applyCommentDecorations(path, target)); }, [applyCommentDecorations]);
 
-  const openCommentComposer = useCallback((editor: any, path: string) => {
-    const model = editor.getModel(); const selection = editor.getSelection(); const position = editor.getPosition();
-    const startLine = selection?.startLineNumber ?? position?.lineNumber;
-    const endLine = selection?.endLineNumber ?? position?.lineNumber;
-    if (!model || !startLine || !endLine) return;
-    const excerpt = selection && !selection.isEmpty() ? model.getValueInRange(selection) : model.getLineContent(startLine);
+  const openCommentComposer = useCallback((editor: any | undefined, path: string) => {
+    const model = editor?.getModel(); const selection = editor?.getSelection(); const position = editor?.getPosition();
+    const startLine = selection?.startLineNumber ?? position?.lineNumber ?? 1;
+    const endLine = selection?.endLineNumber ?? position?.lineNumber ?? startLine;
+    const excerpt = model ? (selection && !selection.isEmpty() ? model.getValueInRange(selection) : model.getLineContent(startLine)) : "";
     setCommentDraft({ path, startLine, endLine, excerpt, text: "" });
   }, []);
   const mountCommentEditor = useCallback((editor: any, monaco: any, path: string) => {
@@ -330,6 +377,9 @@ function App() {
     addLog(`Comment added on ${commentDraft.path}:${commentDraft.startLine}`);
     setCommentDraft(null);
   };
+  const startComment = (path: string) => {
+    openCommentComposer(commentEditors.current.get(path)?.editor, path);
+  };
   const sendComments = async (sessionId: number) => {
     const pending = comments.filter((comment) => comment.status === "pending");
     if (pending.length === 0) return;
@@ -356,11 +406,45 @@ function App() {
     return invoke<string>("generate_commit_message", { agent: selectedAgent });
   };
   const saveActive = () => { if (activeFile) void saveFile(activeFile.path).then(() => addLog(`Saved ${activeFile.path}`)); };
-  const openReview = async (path: string) => { try { setReview({ path, diff: await invoke<GitDiff>("git_diff", { path }) }); } catch (error) { setGitFeedback(`Diff error: ${String(error)}`); } };
-  const markReview = (path: string) => setReviewChecked((current) => current.includes(path) ? current : [...current, path]);
+  const openReview = useCallback(async (path: string) => { try { setReview({ path, diff: await invoke<GitDiff>("git_diff", { path }) }); } catch (nextError) { setGitFeedback(`Diff error: ${String(nextError)}`); } }, []);
+  useEffect(() => {
+    if (mode !== "review" || review || reviewFiles.length === 0) return;
+    const next = reviewFiles.find((file) => !reviewChecked.includes(file.path));
+    if (next) void openReview(next.path);
+  }, [mode, openReview, review, reviewChecked, reviewFiles]);
+  const markAndAdvance = (path: string) => {
+    const checked = reviewChecked.includes(path) ? reviewChecked : [...reviewChecked, path];
+    setReviewChecked(checked);
+    const index = reviewFiles.findIndex((file) => file.path === path);
+    const next = [...reviewFiles.slice(index + 1), ...reviewFiles.slice(0, index)].find((file) => !checked.includes(file.path));
+    if (next) void openReview(next.path); else setReview(null);
+  };
+  const toggleReviewed = (path: string) => {
+    if (reviewChecked.includes(path)) setReviewChecked((current) => current.filter((item) => item !== path));
+    else if (review?.path === path) markAndAdvance(path);
+    else setReviewChecked((current) => [...current, path]);
+  };
+  const toggleStage = async (file: GitFile) => {
+    try {
+      await invoke(file.staged ? "git_unstage" : "git_stage", { path: file.path });
+      await refreshGit();
+      addLog(file.staged ? "File unstaged" : "File staged");
+    } catch (nextError) { setGitFeedback(`Git error: ${String(nextError)}`); }
+  };
+  const changeMode = (next: WorkspaceMode) => {
+    setMode(next);
+    setCommentDraft(null);
+    setAgentCompact(next === "review");
+    if (root) localStorage.setItem(`maestr-mode:${root}`, next);
+  };
+  const authenticateGitHub = () => {
+    setTerminalOpen(true);
+    setTerminalCommand("gh auth login -h github.com -p https -w && gh auth setup-git -h github.com\r");
+    setGitFeedback("Conclua o login do GitHub no terminal e tente Push novamente.");
+  };
   const rejectReview = async () => {
     if (!review || !review.diff.original || !window.confirm(`Restore ${review.path} to HEAD?`)) return;
-    try { await invoke("git_restore_file", { path: review.path }); await useWorkspaceStore.getState().refreshOpenFiles(); await useWorkspaceStore.getState().loadDirectory(); setGitRevision((value) => value + 1); setReview(null); setGitFeedback("File restored to HEAD"); } catch (error) { setGitFeedback(`Restore error: ${String(error)}`); }
+    try { await invoke("git_restore_file", { path: review.path }); setReview(null); await refreshGit(); setGitFeedback("File restored to HEAD"); } catch (nextError) { setGitFeedback(`Restore error: ${String(nextError)}`); }
   };
 
   const startResize = (kind: "sidebar" | "agent" | "terminal", event: ReactPointerEvent) => {
@@ -399,23 +483,24 @@ function App() {
     <main className={`app-shell theme-${settings.theme ?? "maestr"}`}>
       <header className="topbar" data-tauri-drag-region>
         <div className="brand"><img className="brand-mark" src={maestrOnlyLogo} alt="" /><span className="brand-name">Maestr</span></div>
-        <div className="workspace-title"><button className="workspace-picker" onClick={chooseFolder} title="Open another workspace"><Folder size={14} /><span>{rootName}</span></button><BranchSelect onFeedback={(message) => { setGitFeedback(message); addLog(message); }} onChanged={() => setGitRevision((value) => value + 1)} /></div>
-        <div className="top-actions"><button className="icon-button" title="Toggle file tree" onClick={() => setSidebarOpen(!sidebarOpen)}><PanelRight size={17} /></button><button className="icon-button" title="Activity logs" onClick={() => setLogsOpen(true)}><ScrollText size={17} /></button><button className="icon-button" title="Settings" onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></button><WindowControls /></div>
+        <div className="workspace-title"><button className="workspace-picker" onClick={chooseFolder} title="Open another workspace"><Folder size={14} /><span>{rootName}</span></button><BranchSelect key={root} onFeedback={(message) => { setGitFeedback(message); addLog(message); }} onChanged={() => void refreshGit()} /></div>
+        <div className="mode-switch" role="group" aria-label="Workspace mode"><button className={mode === "edit" ? "active" : ""} aria-pressed={mode === "edit"} onClick={() => changeMode("edit")}><FileCode2 size={13} /> Edit</button><button className={mode === "review" ? "active" : ""} aria-pressed={mode === "review"} onClick={() => changeMode("review")}><GitBranch size={13} /> Review{reviewFiles.length > 0 && <span>{reviewFiles.length}</span>}</button></div>
+        <div className="top-actions"><button className="icon-button" title="Activity logs" onClick={() => setLogsOpen(true)}><ScrollText size={17} /></button><button className="icon-button" title="Settings" onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></button><WindowControls /></div>
       </header>
-      <div className="workspace-grid" style={{ gridTemplateColumns: `${agentWidth}px minmax(300px, 1fr) ${sidebarOpen ? sidebarWidth : 0}px` }}>
-        <aside className="agent-panel"><div className="resize-handle resize-right" onPointerDown={(event) => startResize("agent", event)} onDoubleClick={() => resetResize("agent")} /><AgentPanel onSessionChange={setAgentSessionId} onAgentChange={setSelectedAgent} onLog={addLog} /></aside>
+      <div className={`workspace-grid mode-${mode}`} style={{ gridTemplateColumns: `${agentCompact ? 48 : agentWidth}px minmax(300px, 1fr) ${mode === "edit" && explorerCompact ? 48 : sidebarWidth}px` }}>
+        <aside className={`agent-panel ${agentCompact ? "compact" : ""}`}>{!agentCompact && <div className="resize-handle resize-right" onPointerDown={(event) => startResize("agent", event)} onDoubleClick={() => resetResize("agent")} />}<AgentPanel key={root} compact={agentCompact} onToggleCompact={() => setAgentCompact((current) => !current)} onSessionChange={setAgentSessionId} onAgentChange={setSelectedAgent} onLog={addLog} /></aside>
         <section className="editor-area">
-          <div className="tabbar">
+          {mode === "review" ? <div className="reviewbar"><span><strong>Review</strong>{reviewFiles.length ? review ? `${reviewIndex + 1} of ${reviewFiles.length}` : `${reviewChecked.length}/${reviewFiles.length} reviewed` : "No changes"}</span><span className="review-nav"><button className="icon-button small" title="Previous changed file" disabled={reviewIndex <= 0} onClick={() => void openReview(reviewFiles[reviewIndex - 1].path)}><ChevronLeft size={14} /></button><button className="icon-button small" title="Next changed file" disabled={reviewIndex < 0 || reviewIndex >= reviewFiles.length - 1} onClick={() => void openReview(reviewFiles[reviewIndex + 1].path)}><ChevronRight size={14} /></button></span></div> : <div className="tabbar">
             {tabs.length === 0 && <span className="tabbar-empty">No files open</span>}
             {tabs.map((tab) => <button key={tab.path} className={`tab ${tab.path === activePath ? "active" : ""}`} onClick={() => setActive(tab.path)} onMouseDown={(event) => { if (event.button === 1) { event.preventDefault(); closeTab(tab.path); } }}><FileCode2 size={14} /><span>{tab.name}</span>{tab.dirty && <span className="dirty-dot" /> }<span className="tab-close" onClick={(event) => { event.stopPropagation(); closeTab(tab.path); }}><X size={13} /></span></button>)}
-          </div>
-          {review ? <div className={`editor-wrap ${commentDraft?.path === review.path ? "comment-open" : ""}`}><div className="editor-toolbar"><span className="file-location">Review · {review.path}</span><span className="review-actions"><button className="button button-quiet" onClick={() => { markReview(review.path); setReview(null); }}>Mark reviewed</button>{review.diff.original && <button className="button button-quiet" onClick={() => void rejectReview()}>Reject</button>}<button className="button button-quiet" onClick={() => setReview(null)}>Close diff</button></span></div>{commentDraft?.path === review.path && <CommentComposer draft={commentDraft} onChange={(text) => setCommentDraft({ ...commentDraft, text })} onSave={addComment} onCancel={() => setCommentDraft(null)} />}<div className="monaco-editor-host"><DiffEditor height="100%" theme={editorTheme} beforeMount={defineMonacoThemes} original={review.diff.original} modified={review.diff.modified} language={languageFor(review.path)} onMount={(editor, monaco) => { const modified = editor.getModifiedEditor(); mountCommentEditor(modified, monaco, review.path); modified.revealLineInCenter(firstChangedLine(review.diff.original, review.diff.modified)); }} options={{ automaticLayout: true, glyphMargin: true, minimap: { enabled: false }, fontSize: settings.fontSize ?? 13, renderSideBySide: settings.diff !== "inline", scrollBeyondLastLine: false }} /></div></div> : activeFile ? <div className={`editor-wrap ${commentDraft?.path === activeFile.path ? "comment-open" : ""}`}><div className="editor-toolbar"><span className="file-location">{activeFile.path}</span><button className="button button-quiet" disabled={!activeFile.dirty || busy} onClick={saveActive}><Save size={15} /> {activeFile.dirty ? "Save" : "Saved"}</button></div>{commentDraft?.path === activeFile.path && <CommentComposer draft={commentDraft} onChange={(text) => setCommentDraft({ ...commentDraft, text })} onSave={addComment} onCancel={() => setCommentDraft(null)} />}<div className="monaco-editor-host"><Editor height="100%" theme={editorTheme} beforeMount={defineMonacoThemes} path={activeFile.path} language={languageFor(activeFile.path)} value={activeFile.content} onMount={(editor, monaco) => mountCommentEditor(editor, monaco, activeFile.path)} onChange={(value) => updateFile(activeFile.path, value ?? "")} options={{ automaticLayout: true, minimap: { enabled: false }, glyphMargin: true, fontSize: settings.fontSize ?? 13, lineNumbers: settings.lineNumbers === false ? "off" : "on", lineHeight: 22, padding: { top: 18, bottom: 18 }, scrollBeyondLastLine: false, smoothScrolling: true, wordWrap: "off", renderWhitespace: "selection" }} loading={<div className="editor-loading">Loading editor…</div>} /></div></div> : <div className="editor-empty"><FileCode2 size={30} /><p>Open a file from the explorer</p><span>Changes stay local until you save them.</span></div>}
-          <TerminalDock open={terminalOpen} onToggle={() => setTerminalOpen(!terminalOpen)} onResizeStart={(event) => startResize("terminal", event)} onResizeReset={() => resetResize("terminal")} height={terminalHeight} />
+          </div>}
+          {mode === "review" ? review ? <div className={`editor-wrap ${commentDraft?.path === review.path ? "comment-open" : ""}`}><div className="editor-toolbar"><span className="file-location">{review.path}</span><span className="review-actions"><button className="button button-quiet" onClick={() => startComment(review.path)}><MessageSquare size={14} /> Comment</button><button className="button button-quiet" onClick={() => markAndAdvance(review.path)}>Mark reviewed & next</button>{review.diff.original && <button className="button button-quiet danger" onClick={() => void rejectReview()}>Reject</button>}</span></div>{commentDraft?.path === review.path && <CommentComposer draft={commentDraft} onChange={(text) => setCommentDraft({ ...commentDraft, text })} onSave={addComment} onCancel={() => setCommentDraft(null)} />}<div className="monaco-editor-host"><DiffEditor key={review.path} height="100%" theme={editorTheme} beforeMount={defineMonacoThemes} original={review.diff.original} modified={review.diff.modified} language={languageFor(review.path)} onMount={(editor, monaco) => { const modified = editor.getModifiedEditor(); mountCommentEditor(modified, monaco, review.path); modified.revealLineInCenter(firstChangedLine(review.diff.original, review.diff.modified)); }} options={{ automaticLayout: true, readOnly: true, originalEditable: false, glyphMargin: true, minimap: { enabled: false }, fontSize: settings.fontSize ?? 13, renderSideBySide: settings.diff !== "inline", scrollBeyondLastLine: false }} /></div></div> : <div className="editor-empty review-finished"><GitBranch size={30} /><p>{reviewFiles.length ? "Review complete" : "Working tree clean"}</p><span>{reviewFiles.length ? "Every changed file is marked reviewed." : "New agent changes will appear here automatically."}</span>{reviewFiles.length > 0 && <button className="button button-quiet" onClick={() => setReviewChecked([])}>Review again</button>}</div> : activeFile ? <div className={`editor-wrap ${commentDraft?.path === activeFile.path ? "comment-open" : ""}`}><div className="editor-toolbar"><span className="file-location">{activeFile.path}</span><span className="review-actions"><button className="button button-quiet" onClick={() => startComment(activeFile.path)}><MessageSquare size={14} /> Add comment</button><button className="button button-quiet" disabled={!activeFile.dirty || busy} onClick={saveActive}><Save size={15} /> {activeFile.dirty ? "Save" : "Saved"}</button></span></div>{commentDraft?.path === activeFile.path && <CommentComposer draft={commentDraft} onChange={(text) => setCommentDraft({ ...commentDraft, text })} onSave={addComment} onCancel={() => setCommentDraft(null)} />}<div className="monaco-editor-host"><Editor height="100%" theme={editorTheme} beforeMount={defineMonacoThemes} path={activeFile.path} language={languageFor(activeFile.path)} value={activeFile.content} onMount={(editor, monaco) => mountCommentEditor(editor, monaco, activeFile.path)} onChange={(value) => updateFile(activeFile.path, value ?? "")} options={{ automaticLayout: true, minimap: { enabled: false }, glyphMargin: true, fontSize: settings.fontSize ?? 13, lineNumbers: settings.lineNumbers === false ? "off" : "on", lineHeight: 22, padding: { top: 18, bottom: 18 }, scrollBeyondLastLine: false, smoothScrolling: true, wordWrap: "off", renderWhitespace: "selection" }} loading={<div className="editor-loading">Loading editor…</div>} /></div></div> : <div className="editor-empty"><FileCode2 size={30} /><p>Open a file from the explorer</p><span>Changes stay local until you save them.</span></div>}
+          <TerminalDock key={root} open={terminalOpen} command={terminalCommand} onCommandHandled={() => setTerminalCommand(null)} onToggle={() => setTerminalOpen(!terminalOpen)} onResizeStart={(event) => startResize("terminal", event)} onResizeReset={() => resetResize("terminal")} height={terminalHeight} />
         </section>
-        <aside className={`sidebar ${sidebarOpen ? "" : "collapsed"}`}>
-          <div className="panel-heading"><div className="sidebar-tabs"><button className={sidebarTab === "explorer" ? "active" : ""} onClick={() => setSidebarTab("explorer")}>Explorer</button><button className={sidebarTab === "git" ? "active" : ""} onClick={() => setSidebarTab("git")}><GitBranch size={13} /> CODE REVIEW</button></div></div>
-          {sidebarTab === "explorer" ? <><button className="project-root" onClick={() => toggleDirectory({ name: rootName, path: "", kind: "directory", size: 0 })}><span className="tree-root-chevron">{expanded.includes("") ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span><FolderOpen size={15} /><span>{rootName}</span></button><div className="tree" role="tree">{expanded.includes("") && (entries[""] ?? []).map((entry) => <TreeNode key={entry.path} entry={entry} depth={0} />)}</div></> : <><ReviewPanel revision={gitRevision} selected={review?.path ?? ""} checked={reviewChecked} onSelect={openReview} onToggle={(path) => setReviewChecked((current) => current.includes(path) ? current.filter((item) => item !== path) : [...current, path])} comments={comments} onSendComments={() => agentSessionId === null ? Promise.reject(new Error("Start an agent before sending comments")) : sendComments(agentSessionId)} onDeleteComment={(id) => { setComments((current) => current.filter((comment) => comment.id !== id)); addLog("Comment removed"); }} onClearSent={() => { setComments((current) => current.filter((comment) => comment.status !== "sent")); addLog("Sent comments cleared"); }} agentRunning={agentSessionId !== null} onFeedback={setGitFeedback} /><div className="sidebar-section-divider"><span>Git</span></div><GitPanel onFeedback={setGitFeedback} onLog={addLog} feedback={gitFeedback} revision={gitRevision} onReview={openReview} onAskCommit={generateCommitMessage} canGenerateCommit={selectedAgent !== null} /></>}
-          <div className="resize-handle resize-left" onPointerDown={(event) => startResize("sidebar", event)} onDoubleClick={() => resetResize("sidebar")} />
+        <aside className={`sidebar ${mode === "edit" && explorerCompact ? "compact" : ""}`}>
+          {mode === "edit" && explorerCompact ? <button className="explorer-rail" title="Expand file tree" onClick={() => setExplorerCompact(false)}><FileCode2 size={17} /><span>Files</span><ChevronLeft size={14} /></button> : <><div className="panel-heading"><span>{mode === "review" ? "Changes" : "Explorer"}</span>{mode === "review" ? <button className="icon-button small" title="Refresh changes" onClick={() => void refreshGit()}><span aria-hidden="true">↻</span></button> : <button className="icon-button small" title="Collapse file tree" onClick={() => setExplorerCompact(true)}><ChevronRight size={14} /></button>}</div>
+          {mode === "edit" ? <><button className="project-root" onClick={() => toggleDirectory({ name: rootName, path: "", kind: "directory", size: 0 })}><span className="tree-root-chevron">{expanded.includes("") ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span><FolderOpen size={15} /><span>{rootName}</span></button><div className="tree" role="tree">{expanded.includes("") && (entries[""] ?? []).map((entry) => <TreeNode key={entry.path} entry={entry} depth={0} />)}</div></> : <><ReviewPanel files={reviewFiles} selected={review?.path ?? ""} checked={reviewChecked} onSelect={openReview} onToggle={toggleReviewed} onStage={(file) => void toggleStage(file)} comments={comments} onSendComments={() => agentSessionId === null ? Promise.reject(new Error("Start an agent before sending comments")) : sendComments(agentSessionId)} onDeleteComment={(id) => { setComments((current) => current.filter((comment) => comment.id !== id)); addLog("Comment removed"); }} onClearSent={() => { setComments((current) => current.filter((comment) => comment.status !== "sent")); addLog("Sent comments cleared"); }} agentRunning={agentSessionId !== null} onFeedback={setGitFeedback} /><div className="sidebar-section-divider"><span>Git</span></div><GitPanel status={gitStatus} onRefresh={refreshGit} onFeedback={setGitFeedback} onLog={addLog} feedback={gitFeedback} onAuthenticate={authenticateGitHub} onReview={openReview} onAskCommit={generateCommitMessage} canGenerateCommit={selectedAgent !== null} /></>}
+          <div className="resize-handle resize-left" onPointerDown={(event) => startResize("sidebar", event)} onDoubleClick={() => resetResize("sidebar")} /></>}
         </aside>
       </div>
       <footer className="statusbar"><span>{busy ? "Working…" : error ? error : gitFeedback || "Workspace ready"}</span><span className="status-right">UTF-8 <span className="separator" /> LF <span className="separator" /> Local</span></footer>
