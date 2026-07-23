@@ -2,9 +2,11 @@
 <img width="139" height="146" alt="maestr-logo" src="https://github.com/user-attachments/assets/9aa16bd7-f207-4f69-b4b0-b3484ea5f657" />
 </div>
 
-Maestr is a lightweight desktop workspace for AI-assisted software development.
+<div align="center">
+<strong>Maestr</strong> is a lightweight desktop workspace for AI-assisted software development.<br><br>
+Maestr is built for developers who want AI to accelerate their workflow, not take control of it. If you dislike agents making sweeping changes across your codebase without visibility, Maestr keeps you in the conductor's seat. Every edit is transparent, every changed line is reviewable, and every decision is yours to approve. Instead of endless AI chat sessions or blind trust, Maestr focuses on a deliberate workflow: assign a task, watch the agent work, inspect the diff, and decide what gets merged. AI writes the code; you maintain the standards.
+</div>
 
-The app runs locally with Tauri and uses tools already installed on the machine, including Git, Claude Code, Codex, OpenCode, and Pi. It does not call AI provider APIs directly.
 
 ## Features
 
@@ -12,14 +14,20 @@ The app runs locally with Tauri and uses tools already installed on the machine,
 - Edit your files using Monaco editor.
 - Local terminal support.
 - Git actions straight from the UI.
-- Review and approve your AI Agent code.
-- Comment changes and send to your Agent to fix them.
+- Edit mode: You and your agent can modify the code.
+- Review mode: See your changes in a dedicated and streamlined way.
 - Customizable editor font, font size, line numbers, diff layout, and color theme.
 <div align="center">
 <img width="675" height="361" alt="screenshot-2026-07-22_22-58-38" src="https://github.com/user-attachments/assets/ce4583f5-d9ad-4984-8d06-d09d0bdb9ab9" />
-
-<img width="675" height="361" alt="screenshot-2026-07-22_22-59-33" src="https://github.com/user-attachments/assets/271d930b-90cd-4593-9bc2-1a833eeed96d" />
+<br>
+<br>
+<img width="675" height="361" alt="screenshot-2026-07-23_14-44-07" src="https://github.com/user-attachments/assets/b48fddfd-dcc0-4d3d-bb5a-0b3c05c965fb" />
+<br>
+<br>
+<img width="675" height="361" alt="screenshot-2026-07-23_15-02-50" src="https://github.com/user-attachments/assets/bccf2315-a7f7-4fa8-8794-839a529dac04" />
 </div>
+
+
 
 ## Tech Stack
 
