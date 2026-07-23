@@ -1,4 +1,6 @@
-# Maestr
+<div align="center">
+<img width="300" height="300" alt="maestr-logo" src="https://github.com/user-attachments/assets/9aa16bd7-f207-4f69-b4b0-b3484ea5f657" />
+</div>
 
 Maestr is a lightweight desktop workspace for AI-assisted software development. It brings together local files, code editing, terminals, Git, agent CLIs, and code review without replacing an existing editor ecosystem.
 
@@ -13,6 +15,11 @@ The app runs locally with Tauri and uses tools already installed on the machine,
 - Start an installed AI agent in the active workspace.
 - Review changed files, inspect diffs, add line comments, and send review comments to the selected agent.
 - Customize editor font, font size, line numbers, diff layout, and color theme.
+<div align="center">
+<img width="675" height="361" alt="screenshot-2026-07-22_22-58-38" src="https://github.com/user-attachments/assets/ce4583f5-d9ad-4984-8d06-d09d0bdb9ab9" />
+
+<img width="675" height="361" alt="screenshot-2026-07-22_22-59-33" src="https://github.com/user-attachments/assets/271d930b-90cd-4593-9bc2-1a833eeed96d" />
+</div>
 
 ## Tech Stack
 
