@@ -224,6 +224,8 @@ fn start_terminal(
     let mut command = CommandBuilder::new(shell);
     command.cwd(root);
     command.env("TERM", "xterm-256color");
+    command.env("LANG", "C.UTF-8");
+    command.env("LC_CTYPE", "C.UTF-8");
     let child = pair.slave.spawn_command(command).map_err(|e| e.to_string())?;
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
@@ -393,7 +395,7 @@ async fn detect_agent(agent: String) -> AgentAvailability {
 }
 
 #[tauri::command]
-async fn generate_commit_message(workspace: State<'_, WorkspaceState>, agent: String) -> Result<String, String> {
+async fn generate_commit_message(workspace: State<'_, WorkspaceState>, agent: String, model: Option<String>) -> Result<String, String> {
     let root = workspace_root(&workspace)?;
     tauri::async_runtime::spawn_blocking(move || {
         let staged_diff = git_output(&root, &["diff", "--cached", "--no-ext-diff"])?;
@@ -410,12 +412,14 @@ async fn generate_commit_message(workspace: State<'_, WorkspaceState>, agent: St
             if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).trim().to_string()); }
             String::from_utf8_lossy(&output.stdout).lines().map(str::trim).filter(|line| !line.is_empty()).last().map(|line| line.trim_matches('`').to_string()).filter(|line| !line.is_empty()).ok_or(format!("{name} returned no commit message"))
         };
+        let model = model.filter(|value| !value.trim().is_empty());
         match agent.as_str() {
-            "opencode" => message_from(output("opencode", &["run", &prompt])?, "OpenCode"),
-            "claude" => message_from(output("claude", &["-p", &prompt])?, "Claude Code"),
-            "codex" => message_from(output("codex", &["exec", "--ephemeral", &prompt])?, "Codex"),
+            "opencode" => { let args = model.as_deref().map_or_else(|| vec!["run".to_string(), prompt.clone()], |value| vec!["run".into(), "--model".into(), value.into(), prompt.clone()]); message_from(output("opencode", &args.iter().map(String::as_str).collect::<Vec<_>>())?, "OpenCode") },
+            "claude" => { let args = model.as_deref().map_or_else(|| vec!["-p".to_string(), prompt.clone()], |value| vec!["--model".into(), value.into(), "-p".into(), prompt.clone()]); message_from(output("claude", &args.iter().map(String::as_str).collect::<Vec<_>>())?, "Claude Code") },
+            "codex" => { let args = model.as_deref().map_or_else(|| vec!["exec".to_string(), "--ephemeral".into(), prompt.clone()], |value| vec!["exec".into(), "--ephemeral".into(), "--model".into(), value.into(), prompt.clone()]); message_from(output("codex", &args.iter().map(String::as_str).collect::<Vec<_>>())?, "Codex") },
             "pi" => {
-                let mut child = Command::new("pi").args(["--mode", "rpc", "--no-session"]).current_dir(&root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|error| format!("Could not run Pi: {error}"))?;
+                let args = model.as_deref().map_or_else(|| vec!["--mode".to_string(), "rpc".into(), "--no-session".into()], |value| vec!["--model".into(), value.into(), "--mode".into(), "rpc".into(), "--no-session".into()]);
+                let mut child = Command::new("pi").args(&args).current_dir(&root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|error| format!("Could not run Pi: {error}"))?;
                 child.stdin.take().ok_or("Could not open Pi stdin")?.write_all(format!("{}\n", serde_json::json!({ "type": "prompt", "message": prompt })).as_bytes()).map_err(|error| error.to_string())?;
                 let stdout = child.stdout.take().ok_or("Could not open Pi stdout")?;
                 let mut message = String::new();

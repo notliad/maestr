@@ -50,6 +50,16 @@ pnpm install
 pnpm tauri dev
 ```
 
+## Install
+
+On Linux, install the latest AppImage with one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/notliad/maestr/main/install.sh | sh
+```
+
+The binary is installed at `~/.local/bin/maestr`. macOS and Windows installers are available on the [releases page](https://github.com/notliad/maestr/releases).
+
 ## Commands
 
 ```bash
