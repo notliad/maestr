@@ -14,8 +14,8 @@ Maestr is built for developers who want AI to accelerate their workflow, not tak
 - Edit your files using Monaco editor.
 - Local terminal support.
 - Git actions straight from the UI.
-- Review and approve your AI Agent code.
-- Comment changes and send to your Agent to fix them.
+- Edit mode: You and your agent can modify the code.
+- Review mode: See your changes in a dedicated and streamlined way.
 - Customizable editor font, font size, line numbers, diff layout, and color theme.
 <div align="center">
 <img width="675" height="361" alt="screenshot-2026-07-22_22-58-38" src="https://github.com/user-attachments/assets/ce4583f5-d9ad-4984-8d06-d09d0bdb9ab9" />
