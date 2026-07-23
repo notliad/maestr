@@ -27,29 +27,6 @@ Maestr is built for developers who want AI to accelerate their workflow, not tak
 <img width="675" height="361" alt="screenshot-2026-07-23_15-02-50" src="https://github.com/user-attachments/assets/bccf2315-a7f7-4fa8-8794-839a529dac04" />
 </div>
 
-
-
-## Tech Stack
-
-- [Tauri v2](https://v2.tauri.app/) and Rust
-- React, TypeScript, and Vite
-- Monaco Editor and xterm.js
-- Zustand for frontend state
-
-## Requirements
-
-- Node.js 20 or later
-- pnpm 9 or later
-- Rust stable toolchain
-- System build dependencies required by Tauri for your platform
-- Git, plus any agent CLI you like
-## Getting Started
-
-```bash
-pnpm install
-pnpm tauri dev
-```
-
 ## Install
 
 On Linux, install the latest AppImage with one command:
@@ -75,6 +52,21 @@ pnpm tauri build
 # Check the Rust backend
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
+
+## Tech Stack
+
+- [Tauri v2](https://v2.tauri.app/) and Rust
+- React, TypeScript, and Vite
+- Monaco Editor and xterm.js
+- Zustand for frontend state
+
+## Requirements
+
+- Node.js 20 or later
+- pnpm 9 or later
+- Rust stable toolchain
+- System build dependencies required by Tauri for your platform
+- Git, plus any agent CLI you like
 
 ## Architecture
 
