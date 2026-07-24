@@ -33,6 +33,17 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
@@ -44,10 +55,10 @@ jobs:
             libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev
 
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
 
       - name: Build Tauri app
-        run: pnpm tauri build
+        run: pnpm tauri build --bundles appimage
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
