@@ -1817,7 +1817,7 @@ button {
   --theme-accent: #0755b1;
 }
 
-.theme-maestr {
+.theme-tide {
   --theme-bg: #030a18;
   --theme-panel: #071429;
   --theme-editor: #030a18;
@@ -2368,7 +2368,7 @@ button {
   --success: #91c993;
 }
 
-.theme-maestr {
+.theme-tide {
   --app-bg: #242423;
   --surface: #333533;
   --surface-raised: #3b3d3a;
@@ -2433,8 +2433,8 @@ button {
   --accent-contrast: #001f27;
 }
 
-/* Tide: ink-blue workspace with teal actions and warm review signals. */
-.theme-tide {
+/* Maestr: ink-blue workspace with teal actions and warm review signals. */
+.theme-maestr {
   --app-bg: #011627;
   --surface: #062033;
   --surface-raised: #0b2d42;
