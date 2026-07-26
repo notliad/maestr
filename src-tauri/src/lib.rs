@@ -1,6 +1,6 @@
 use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, io::{BufRead, Read, Write}, path::{Path, PathBuf}, process::{Command, Output, Stdio}, sync::{Arc, Mutex}, thread};
+use std::{collections::HashMap, fs, io::{BufRead, Read, Write}, path::{Path, PathBuf}, process::{Command, Output, Stdio}, sync::{atomic::{AtomicU32, Ordering}, Arc, Mutex}, thread};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, process::{Child as TokioChild, Command as TokioCommand}};
 
@@ -31,8 +31,11 @@ struct AgentTask {
     child: tokio::sync::Mutex<TokioChild>,
 }
 
-#[derive(Default)]
-struct AgentState(Arc<Mutex<HashMap<u32, Arc<AgentTask>>>>);
+struct AgentState { tasks: Arc<Mutex<HashMap<u32, Arc<AgentTask>>>>, next_id: AtomicU32 }
+
+impl Default for AgentState {
+    fn default() -> Self { Self { tasks: Arc::new(Mutex::new(HashMap::new())), next_id: AtomicU32::new(1) } }
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +89,14 @@ struct FileEntry {
     size: u64,
     #[serde(default)]
     project: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchMatch {
+    path: String,
+    line: usize,
+    preview: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -201,6 +212,38 @@ fn read_file(state: State<'_, WorkspaceState>, path: String) -> Result<String, S
 }
 
 #[tauri::command]
+fn search_workspace(state: State<'_, WorkspaceState>, query: String) -> Result<Vec<SearchMatch>, String> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() { return Ok(Vec::new()); }
+    let root = workspace_root(&state)?;
+    let mut matches = Vec::new();
+    fn visit(root: &Path, directory: &Path, query: &str, matches: &mut Vec<SearchMatch>) {
+        if matches.len() >= 100 { return; }
+        let Ok(entries) = fs::read_dir(directory) else { return; };
+        for entry in entries.flatten() {
+            if matches.len() >= 100 { return; }
+            let path = entry.path();
+            if entry.file_name() == ".git" || entry.file_name() == "node_modules" { continue; }
+            if path.is_dir() { visit(root, &path, query, matches); continue; }
+            let Ok(metadata) = entry.metadata() else { continue; };
+            if metadata.len() > MAX_EDITABLE_BYTES { continue; }
+            let Ok(contents) = fs::read_to_string(&path) else { continue; };
+            let relative = path.strip_prefix(root).ok().map(|item| item.to_string_lossy().replace('\\', "/"));
+            let Some(relative) = relative else { continue; };
+            for (index, line) in contents.lines().enumerate() {
+                if line.to_lowercase().contains(query) {
+                    matches.push(SearchMatch { path: relative.clone(), line: index + 1, preview: line.trim().chars().take(180).collect() });
+                    if matches.len() >= 100 { return; }
+                }
+            }
+        }
+    }
+    // ponytail: synchronous bounded scan avoids another dependency; move to a background index if large workspaces need it.
+    visit(&root, &root, &query, &mut matches);
+    Ok(matches)
+}
+
+#[tauri::command]
 fn write_file(state: State<'_, WorkspaceState>, path: String, contents: String) -> Result<(), String> {
     if contents.len() as u64 > MAX_EDITABLE_BYTES { return Err("File is too large to edit".into()); }
     let root = workspace_root(&state)?;
@@ -222,6 +265,7 @@ fn start_terminal(
     let pty = native_pty_system();
     let pair = pty.openpty(PtySize { rows: rows.max(1), cols: cols.max(1), pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
     let mut command = CommandBuilder::new(shell);
+    command.arg("-i");
     command.cwd(root);
     command.env("TERM", "xterm-256color");
     command.env("LANG", "C.UTF-8");
@@ -440,55 +484,106 @@ async fn start_agent(
     app: AppHandle,
     workspace: State<'_, WorkspaceState>,
     agents: State<'_, AgentState>,
+    agent: String,
     prompt: String,
 ) -> Result<u32, String> {
     let root = workspace_root(&workspace)?;
     if prompt.trim().is_empty() { return Err("Prompt is required".into()); }
-    if !agents.0.lock().map_err(|_| "Agent lock poisoned".to_string())?.is_empty() { return Err("An agent task is already running".into()); }
-    let mut child = TokioCommand::new("claude")
-        .args(["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--no-session-persistence"])
-        .current_dir(root)
-        .stdin(Stdio::piped())
+    if !agents.tasks.lock().map_err(|_| "Agent lock poisoned".to_string())?.is_empty() { return Err("An agent task is already running".into()); }
+    let mut command = TokioCommand::new(&agent);
+    let uses_stdin = agent == "pi";
+    match agent.as_str() {
+        "claude" => { command.args(["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "acceptEdits"]).arg(&prompt); }
+        "codex" => { command.args(["exec", "--json", "--color", "never", "--sandbox", "workspace-write"]).arg(&prompt); }
+        "opencode" => { command.args(["run", "--format", "json", "--log-level", "ERROR"]).arg(&prompt); }
+        "pi" => { command.args(["--mode", "rpc"]); }
+        _ => return Err(format!("Unsupported agent: {agent}")),
+    }
+    let mut child = command.current_dir(root)
+        .stdin(if uses_stdin { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Could not start Claude Code: {e}"))?;
-    let mut stdin = child.stdin.take().ok_or("Could not open agent stdin")?;
-    stdin.write_all(prompt.as_bytes()).await.map_err(|e| e.to_string())?;
-    drop(stdin);
+    if uses_stdin {
+        let mut stdin = child.stdin.take().ok_or("Could not open agent stdin")?;
+        stdin.write_all(format!("{}\n", serde_json::json!({ "type": "prompt", "message": prompt })).as_bytes()).await.map_err(|e| e.to_string())?;
+        drop(stdin);
+    }
     let stdout = child.stdout.take().ok_or("Could not open agent stdout")?;
     let stderr = child.stderr.take().ok_or("Could not open agent stderr")?;
-    let task_id = 1;
+    let task_id = agents.next_id.fetch_add(1, Ordering::Relaxed);
     let task = Arc::new(AgentTask { child: tokio::sync::Mutex::new(child) });
-    let agent_tasks = Arc::clone(&agents.0);
-    agents.0.lock().map_err(|_| "Agent lock poisoned".to_string())?.insert(task_id, Arc::clone(&task));
+    let agent_tasks = Arc::clone(&agents.tasks);
+    agents.tasks.lock().map_err(|_| "Agent lock poisoned".to_string())?.insert(task_id, Arc::clone(&task));
     let event_app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut output = BufReader::new(stdout).lines();
         let mut errors = BufReader::new(stderr).lines();
-        loop {
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        let mut stderr_lines = Vec::new();
+        while !stdout_done || !stderr_done {
             tokio::select! {
-                line = output.next_line() => match line { Ok(Some(line)) => emit_agent_line(&event_app, task_id, &line), _ => break },
-                line = errors.next_line() => if let Ok(Some(line)) = line { let _ = event_app.emit("agent-event", AgentEvent { task_id, kind: "error".into(), message: Some(line), raw: None }); },
+                line = output.next_line(), if !stdout_done => match line { Ok(Some(line)) => emit_agent_line(&event_app, task_id, &line), _ => stdout_done = true },
+                line = errors.next_line(), if !stderr_done => match line { Ok(Some(line)) => stderr_lines.push(line), _ => stderr_done = true },
             }
         }
         let code = task.child.lock().await.wait().await.ok().and_then(|status| status.code()).unwrap_or_default();
         if let Ok(mut tasks) = agent_tasks.lock() { tasks.remove(&task_id); }
+        if code != 0 && !stderr_lines.is_empty() { let _ = event_app.emit("agent-event", AgentEvent { task_id, kind: "error".into(), message: Some(stderr_lines.join("\n")), raw: None }); }
         let _ = event_app.emit("agent-event", AgentEvent { task_id, kind: "finished".into(), message: Some(format!("Finished (exit {code})")), raw: None });
     });
-    let _ = app.emit("agent-event", AgentEvent { task_id, kind: "started".into(), message: Some("Claude Code started".into()), raw: None });
+    let _ = app.emit("agent-event", AgentEvent { task_id, kind: "started".into(), message: Some(format!("{agent} started")), raw: None });
     Ok(task_id)
 }
 
 fn emit_agent_line(app: &AppHandle, task_id: u32, line: &str) {
+    if let Some(activity) = agent_activity(line) {
+        let _ = app.emit("agent-event", AgentEvent { task_id, kind: "activity".into(), message: Some(activity), raw: Some(line.to_string()) });
+        return;
+    }
+    if let Some(message) = agent_text(line) { let _ = app.emit("agent-event", AgentEvent { task_id, kind: "output".into(), message: Some(message), raw: Some(line.to_string()) }); }
+}
+
+fn agent_activity(line: &str) -> Option<String> {
+    let json = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    json.pointer("/item/command").and_then(|value| value.as_str()).map(|command| format!("Running {command}"))
+        .or_else(|| json.pointer("/part/tool").and_then(|value| value.as_str()).map(|tool| format!("Using {tool}")))
+        .or_else(|| json.pointer("/tool_name").and_then(|value| value.as_str()).map(|tool| format!("Using {tool}")))
+        .or_else(|| json.pointer("/assistantMessageEvent/toolName").and_then(|value| value.as_str()).map(|tool| format!("Using {tool}")))
+}
+
+fn agent_text(line: &str) -> Option<String> {
     let parsed = serde_json::from_str::<serde_json::Value>(line).ok();
-    let message = parsed.as_ref().and_then(|json| json.get("message")).and_then(|value| value.get("content")).and_then(|value| value.as_array()).and_then(|items| items.iter().find_map(|item| item.get("text").and_then(|text| text.as_str()))).map(str::to_string);
-    let _ = app.emit("agent-event", AgentEvent { task_id, kind: "output".into(), message, raw: Some(line.to_string()) });
+    parsed.as_ref().and_then(|json| {
+        json.pointer("/message/content").and_then(|value| value.as_array()).and_then(|items| items.iter().find_map(|item| item.get("text").and_then(|text| text.as_str())))
+            .or_else(|| json.pointer("/item/text").and_then(|value| value.as_str()))
+            .or_else(|| json.pointer("/assistantMessageEvent/delta").and_then(|value| value.as_str()))
+            .or_else(|| json.pointer("/payload/delta").and_then(|value| value.as_str()))
+            .or_else(|| json.pointer("/part/text").and_then(|value| value.as_str()))
+            .or_else(|| json.get("text").and_then(|value| value.as_str()))
+    }).map(str::to_string).or_else(|| (!line.trim_start().starts_with('{')).then(|| line.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{agent_activity, agent_text};
+
+    #[test]
+    fn extracts_common_agent_text_shapes() {
+        assert_eq!(agent_text(r#"{"message":{"content":[{"text":"Claude"}]}}"#).as_deref(), Some("Claude"));
+        assert_eq!(agent_text(r#"{"item":{"text":"Codex"}}"#).as_deref(), Some("Codex"));
+        assert_eq!(agent_text(r#"{"assistantMessageEvent":{"delta":"Pi"}}"#).as_deref(), Some("Pi"));
+        assert_eq!(agent_text(r#"{"type":"text","payload":{"delta":"OpenCode"}}"#).as_deref(), Some("OpenCode"));
+        assert_eq!(agent_text("OpenCode").as_deref(), Some("OpenCode"));
+        assert_eq!(agent_activity(r#"{"item":{"command":"cargo test"}}"#).as_deref(), Some("Running cargo test"));
+    }
 }
 
 #[tauri::command]
 async fn cancel_agent(agents: State<'_, AgentState>, task_id: u32) -> Result<(), String> {
-    let task = agents.0.lock().map_err(|_| "Agent lock poisoned".to_string())?.remove(&task_id).ok_or("Agent task not found")?;
+    let task = agents.tasks.lock().map_err(|_| "Agent lock poisoned".to_string())?.remove(&task_id).ok_or("Agent task not found")?;
     let result = task.child.lock().await.kill().await.map_err(|e| e.to_string());
     result
 }
@@ -505,7 +600,7 @@ pub fn run() {
         .manage(AgentState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![recent_projects, set_workspace, list_directory, read_file, write_file, start_terminal, write_terminal, resize_terminal, close_terminal, git_status, git_stage, git_unstage, git_stage_all, git_unstage_all, git_commit, git_sync, git_branches, git_checkout, git_diff, git_restore_file, detect_agent, generate_commit_message, start_agent, cancel_agent])
+        .invoke_handler(tauri::generate_handler![recent_projects, set_workspace, list_directory, read_file, search_workspace, write_file, start_terminal, write_terminal, resize_terminal, close_terminal, git_status, git_stage, git_unstage, git_stage_all, git_unstage_all, git_commit, git_sync, git_branches, git_checkout, git_diff, git_restore_file, detect_agent, generate_commit_message, start_agent, cancel_agent])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
